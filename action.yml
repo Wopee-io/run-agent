@@ -276,6 +276,141 @@ runs:
           || echo "Warning: webhook POST failed"
         echo "::endgroup::"
 
+    - name: Start Chrome with CDP
+      if: env.AGENT_MODE == 'interactive'
+      shell: bash
+      run: |
+        nohup chrome \
+          --headless=new \
+          --remote-debugging-address=127.0.0.1 \
+          --remote-debugging-port=9222 \
+          --user-data-dir=/tmp/chrome-cdp \
+          --remote-allow-origins=* \
+          --no-sandbox \
+          --disable-dev-shm-usage \
+          --disable-gpu \
+          >/tmp/chrome.out 2>&1 &
+
+        for i in {1..20}; do
+          if curl -sf http://127.0.0.1:9222/json/version >/dev/null; then break; fi
+          sleep 0.3
+        done
+
+    - name: Start CDP session proxy
+      if: env.AGENT_MODE == 'interactive'
+      shell: bash
+      run: |
+        if ! command -v cdp-session-proxy &>/dev/null; then
+          npm install -g @wopee-io/cdp-session-proxy
+        fi
+
+        nohup cdp-session-proxy start \
+          --chrome-port 9222 \
+          --proxy-port 9223 \
+          --multi-client \
+          --viewer-port 9224 \
+          --output /tmp/recordings \
+          >/tmp/proxy.out 2>&1 &
+
+        for i in {1..20}; do
+          if curl -sf http://127.0.0.1:9224/api/sessions >/dev/null 2>&1; then break; fi
+          sleep 0.3
+        done
+        echo "CDP session proxy ready"
+
+    - name: Publish via Traefik
+      if: env.AGENT_MODE == 'interactive'
+      id: publish
+      shell: bash
+      run: |
+        set -euo pipefail
+        RID="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+        FQDN="runner.${ENV_SUBDOMAIN}.${DOMAIN}"
+        VIEWER_FQDN="viewer.${ENV_SUBDOMAIN}.${DOMAIN}"
+        IP="$(awk -v h="$(hostname)" '$2==h {print $1; exit}' /etc/hosts || true)"
+        [ -z "${IP:-}" ] && { echo "IP unknown" >&2; exit 1; }
+        FILE="/dynamic/${RID}.yml"
+        umask 077
+
+        cat >"$FILE" <<'TRAEFIK_YAML'
+        tls:
+          options:
+            ws:
+              alpnProtocols:
+                - http/1.1
+        http:
+          middlewares:
+            PLACEHOLDER_RID-strip:
+              stripPrefix:
+                prefixes:
+                  - "/PLACEHOLDER_RID"
+            PLACEHOLDER_SUITE-viewer-strip:
+              stripPrefix:
+                prefixes:
+                  - "/PLACEHOLDER_SUITE"
+          routers:
+            PLACEHOLDER_RID:
+              rule: Host(`PLACEHOLDER_FQDN`) && PathPrefix(`/PLACEHOLDER_RID`)
+              entryPoints: [websecure]
+              tls:
+                options: ws
+              middlewares:
+                - PLACEHOLDER_RID-strip
+              service: PLACEHOLDER_RID
+            PLACEHOLDER_SUITE-viewer:
+              rule: Host(`PLACEHOLDER_VIEWER_FQDN`) && PathPrefix(`/PLACEHOLDER_SUITE`)
+              entryPoints: [websecure]
+              tls: {}
+              middlewares:
+                - PLACEHOLDER_SUITE-viewer-strip
+              service: PLACEHOLDER_SUITE-viewer
+          services:
+            PLACEHOLDER_RID:
+              loadBalancer:
+                passHostHeader: false
+                servers:
+                  - url: http://PLACEHOLDER_IP:9223
+            PLACEHOLDER_SUITE-viewer:
+              loadBalancer:
+                passHostHeader: false
+                servers:
+                  - url: http://PLACEHOLDER_IP:9224
+        TRAEFIK_YAML
+
+        sed -i \
+          -e "s/PLACEHOLDER_RID/${RID}/g" \
+          -e "s/PLACEHOLDER_SUITE/${WOPEE_SUITE_UUID}/g" \
+          -e "s/PLACEHOLDER_FQDN/${FQDN}/g" \
+          -e "s/PLACEHOLDER_VIEWER_FQDN/${VIEWER_FQDN}/g" \
+          -e "s/PLACEHOLDER_IP/${IP}/g" \
+          "$FILE"
+
+        nohup socat TCP-LISTEN:9223,bind=${IP},fork,reuseaddr,keepalive,nodelay TCP:127.0.0.1:9223 \
+          >/tmp/socat-proxy.out 2>&1 &
+        nohup socat TCP-LISTEN:9224,bind=${IP},fork,reuseaddr,keepalive,nodelay TCP:127.0.0.1:9224 \
+          >/tmp/socat-viewer.out 2>&1 &
+
+        TARGET_ID=$(curl -s http://127.0.0.1:9222/json/list | jq -r 'map(select(.type=="page")) | .[0].id // empty')
+        [ -z "$TARGET_ID" ] && { echo "::error::No page target found in Chrome CDP"; exit 1; }
+
+        BROWSER_WSS_ENDPOINT="wss://${FQDN}/${RID}/devtools/viewer/${TARGET_ID}"
+        VIEWER_URL="https://${VIEWER_FQDN}/${WOPEE_SUITE_UUID}/"
+
+        echo "BROWSER_WSS_ENDPOINT=${BROWSER_WSS_ENDPOINT}" >> "$GITHUB_ENV"
+        echo "PROXY_TARGET_ID=${TARGET_ID}" >> "$GITHUB_ENV"
+        echo "browser_wss_endpoint=${BROWSER_WSS_ENDPOINT}" >> "$GITHUB_OUTPUT"
+        echo "viewer_url=${VIEWER_URL}" >> "$GITHUB_OUTPUT"
+        echo "::notice title=Browser WSS::${BROWSER_WSS_ENDPOINT}"
+        echo "::notice title=Viewer::${VIEWER_URL}"
+
+    - name: Route agent through proxy
+      if: env.AGENT_MODE == 'interactive'
+      shell: bash
+      run: |
+        TARGET_ID="${PROXY_TARGET_ID}"
+        echo "DEVTOOLS_URL=ws://127.0.0.1:9223/devtools/agent/${TARGET_ID}" >> "$GITHUB_ENV"
+        echo "BROWSER_WSS_ENDPOINT=${BROWSER_WSS_ENDPOINT}" >> "$GITHUB_ENV"
+
     - name: Run agent
       id: run-agent
       shell: bash
@@ -353,18 +488,18 @@ runs:
           REPORT_CONTENT="Agent report not found at $REPORT_PATH"
           echo "⚠️ $REPORT_CONTENT"
         fi
-    
+
         {
           echo "WOPEE_AGENT_REPORT<<EOF"
           echo "$REPORT_CONTENT"
           echo "EOF"
         } >> "$GITHUB_ENV"
-    
+
     - name: echo report
       shell: bash
       run: |
         printf '%s\n' "${WOPEE_AGENT_REPORT:-}"
-    
+
     - name: Post-process suites if agent did not run
       if: always() && steps.run-agent.outcome != 'success'
       shell: bash
@@ -447,3 +582,10 @@ runs:
           --header "api_key: ${WOPEE_API_KEY}" \
           --url "${WOPEE_API_URL}" \
           --data "$JSON_PAYLOAD"
+
+    - name: Delete Traefik YAML
+      if: always() && env.AGENT_MODE == 'interactive'
+      shell: bash
+      run: |
+        RID="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+        rm -f "/dynamic/${RID}.yml" || true
