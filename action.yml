@@ -474,6 +474,11 @@ runs:
         path: |
           ${{ env.WOPEE_AGENT_WORK_DIR }}/test-results
           ${{ env.WOPEE_AGENT_WORK_DIR }}/playwright-report
+          /tmp/proxy.out
+          /tmp/chrome.out
+          /tmp/socat-proxy.out
+          /tmp/socat-viewer.out
+        if-no-files-found: ignore
         retention-days: 1
 
     - name: Export Test Report to WOPEE_AGENT_REPORT
