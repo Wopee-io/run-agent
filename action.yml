@@ -301,7 +301,8 @@ runs:
       shell: bash
       run: |
         if ! command -v cdp-session-proxy &>/dev/null; then
-          npm install -g @wopee-io/cdp-session-proxy
+          echo "::error::cdp-session-proxy not found on PATH. Runtime image is stale; rebuild ghcr.io/autonomous-testing/runtime so it ships the preinstalled binary."
+          exit 1
         fi
 
         nohup cdp-session-proxy start \
