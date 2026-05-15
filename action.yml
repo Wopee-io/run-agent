@@ -327,10 +327,10 @@ runs:
           >/tmp/proxy.out 2>&1 &
 
         for i in {1..20}; do
-          if curl -sf http://127.0.0.1:9223/json >/dev/null 2>&1; then break; fi
+          if bash -c 'echo > /dev/tcp/127.0.0.1/9223' 2>/dev/null; then break; fi
           sleep 0.3
         done
-        if ! curl -sf http://127.0.0.1:9223/json >/dev/null 2>&1; then
+        if ! bash -c 'echo > /dev/tcp/127.0.0.1/9223' 2>/dev/null; then
           echo "::error::cdp-session-proxy failed to start. Check /tmp/proxy.out for details."
           cat /tmp/proxy.out 2>/dev/null || true
           exit 1
