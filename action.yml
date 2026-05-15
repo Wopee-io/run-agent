@@ -358,6 +358,11 @@ runs:
           if curl -sf http://127.0.0.1:9223/json >/dev/null 2>&1; then break; fi
           sleep 0.3
         done
+        if ! curl -sf http://127.0.0.1:9223/json >/dev/null 2>&1; then
+          echo "::error::cdp-session-proxy failed to start. Check /tmp/proxy.out for details."
+          cat /tmp/proxy.out 2>/dev/null || true
+          exit 1
+        fi
         echo "CDP session proxy ready (uplink mode)"
 
     - name: Route agent through proxy
