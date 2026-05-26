@@ -59,7 +59,6 @@ runs:
         curl -s -o /dev/null -w "ghcr.io: HTTP %{http_code} in %{time_total}s\n" https://ghcr.io 2>/dev/null || echo "ghcr.io unreachable"
         echo "::endgroup::"
 
-
     - name: Set default values for environment variables
       shell: bash
       run: |
@@ -358,14 +357,16 @@ runs:
           if [ "${{ github.event.action }}" = "crawl" ]; then
             MUTATION="PostProcessAnalysisSuite"
             INPUT_TYPE="PostProcessAnalysisSuiteInput"
+            SELECTION="{ postProcessing errorMessage }"
           else
             MUTATION="PostProcessAgentSuite"
             INPUT_TYPE="PostProcessAgentSuiteInput"
+            SELECTION="{ postProcessing errorMessage }"
           fi
 
           JSON_PAYLOAD=$(cat <<-EOF
           {
-            "query": "mutation ${MUTATION}(\$input: ${INPUT_TYPE}!) { ${MUTATION}(input: \$input) }",
+            "query": "mutation ${MUTATION}(\$input: ${INPUT_TYPE}!) { ${MUTATION}(input: \$input) ${SELECTION} }",
             "variables": {
               "input": {
                 "error": true,
@@ -453,7 +454,7 @@ runs:
         AGENT_LOG_JSON="[]"
         CODE_STEPS_TEXT=""
 
-        QUERY_ANALYSIS='mutation PostProcessAnalysisSuite($input: PostProcessAnalysisSuiteInput!) { postProcessAnalysisSuite(input: $input) }'
+        QUERY_ANALYSIS='mutation PostProcessAnalysisSuite($input: PostProcessAnalysisSuiteInput!) { postProcessAnalysisSuite(input: $input) { postProcessing errorMessage } }'
         QUERY_AGENT='mutation PostProcessAgentSuite($input: PostProcessAgentSuiteInput!) { postProcessAgentSuite(input: $input) { postProcessing codeGeneration { status message } testCaseStepsGeneration { status message } errorMessage } }'
 
         HAS_IDENTIFIER=false
