@@ -421,7 +421,6 @@ runs:
         REPORT_PATH="${WOPEE_AGENT_WORK_DIR}/test-results/report.md"
         if [ -f "$REPORT_PATH" ]; then
           REPORT_CONTENT="$(cat "$REPORT_PATH")"
-          cat "$REPORT_PATH"
         else
           REPORT_CONTENT="Agent report not found at $REPORT_PATH"
           echo "⚠️ $REPORT_CONTENT"
@@ -432,11 +431,6 @@ runs:
           echo "$REPORT_CONTENT"
           echo "EOF"
         } >> "$GITHUB_ENV"
-
-    - name: echo report
-      shell: bash
-      run: |
-        printf '%s\n' "${WOPEE_AGENT_REPORT:-}"
 
     - name: Post-process suites if agent did not run
       if: always() && steps.run-agent.outcome != 'success'
