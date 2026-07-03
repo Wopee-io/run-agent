@@ -379,7 +379,8 @@ runs:
         EOF
           )
 
-          curl --request POST --max-time 10 \
+          curl --request POST --max-time 20 \
+            --retry 3 --retry-delay 2 \
             --header 'content-type: application/json' \
             --header 'api_key: ${{ env.WOPEE_API_KEY }}' \
             --url '${{ env.WOPEE_API_URL }}' \
@@ -438,6 +439,15 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+
+        # pw-agent writes this marker only after the server confirmed post-processing.
+        # If it exists, the suite is already finalized (the agent step may still have
+        # failed for other reasons) — a second error:true post-process would wrongly
+        # mark it failed/stopped.
+        if [ -f "${WOPEE_AGENT_WORK_DIR:-}/test-results/.wopee-postprocess-ok" ]; then
+          echo "Post-process already confirmed by the agent; skipping fallback"
+          exit 0
+        fi
 
         if [ -z "${WOPEE_API_URL:-}" ] || [ -z "${WOPEE_API_KEY:-}" ]; then
           echo "WARNING: WOPEE_API_URL or WOPEE_API_KEY is missing; skipping fallback post-process"
@@ -510,7 +520,8 @@ runs:
         fi
 
         curl --fail-with-body --silent --show-error \
-          --request POST \
+          --request POST --max-time 30 \
+          --retry 3 --retry-delay 2 \
           --header "content-type: application/json" \
           --header "api_key: ${WOPEE_API_KEY}" \
           --url "${WOPEE_API_URL}" \
