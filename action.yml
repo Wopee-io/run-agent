@@ -401,7 +401,11 @@ runs:
         wait $!
 
     - name: Upload test results
-      if: always()
+      # Default: always (unchanged). Set WOPEE_UPLOAD_ARTIFACTS=on-failure to skip the upload for passing
+      # runs — on a VPN-bound self-hosted runner this is ~34s and 40-70MB per run through the same tunnel
+      # the SUT traffic uses, so uploading green runs slows the very system under test. Traces stay on the
+      # runner either way; only the transfer is skipped.
+      if: ${{ failure() || env.WOPEE_UPLOAD_ARTIFACTS != 'on-failure' }}
       # A failed/slow upload must not fail the run or hold the runner; the agent verdict is already reported.
       continue-on-error: true
       uses: actions/upload-artifact@v7
