@@ -228,6 +228,19 @@ runs:
         echo "agent:   $(cd "$WORK_DIR" 2>/dev/null && npx --no-install playwright --version 2>/dev/null || echo 'unknown')"
         BROWSERS_DIR="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}"
         ls -la "$BROWSERS_DIR" 2>/dev/null || echo "No browsers at $BROWSERS_DIR"
+        # WHICH binary interactive mode actually drives. In interactive runs the
+        # browser is shell-launched as `chrome` from PATH, not launched by
+        # Playwright, and that symlink is built in runtime/Dockerfile.base from a
+        # filesystem walk. Nothing has ever recorded what it resolves to, so
+        # "the agent drives the build Playwright was made against" has been an
+        # assumption for the life of the CDP path.
+        CHROME_BIN="$(command -v chrome 2>/dev/null || echo '')"
+        if [ -n "$CHROME_BIN" ]; then
+          echo "chrome on PATH: $CHROME_BIN -> $(readlink -f "$CHROME_BIN")"
+          echo "chrome --version: $("$CHROME_BIN" --version 2>/dev/null || echo 'unavailable')"
+        else
+          echo "chrome not on PATH (standard/headless mode launches via Playwright)"
+        fi
         echo "::endgroup::"
 
         echo "::group::Diagnostic fingerprint (JSON)"
@@ -297,6 +310,15 @@ runs:
           if curl -sf http://127.0.0.1:9222/json/version >/dev/null; then break; fi
           sleep 0.3
         done
+
+        # The readiness probe already asks Chrome to identify itself and threw
+        # the answer away. It carries the browser build and the CDP protocol
+        # version — the two facts that say whether this browser is the one
+        # Playwright was built against, which no run has ever recorded.
+        echo "::group::Chrome identity"
+        curl -s http://127.0.0.1:9222/json/version || echo "could not read /json/version"
+        echo
+        echo "::endgroup::"
 
     - name: Register browser session with API relay
       if: env.AGENT_MODE == 'interactive'
