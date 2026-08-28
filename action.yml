@@ -84,6 +84,53 @@ runs:
             end
         ' "$GITHUB_EVENT_PATH" >> "$GITHUB_ENV"
 
+    # Bind this execution to its Actions run NOW, not at the end (backlog#4382).
+    #
+    # The api creates the ExecutedTestCase row before it fires repository_dispatch, but that
+    # POST returns 204 with no body — so the api never learns which Actions run picked the
+    # dispatch up. Until this step existed the pairing was only reported by postProcessAgentSuite
+    # once the run was already over. Callers had to guess their run out of a gh run list poll
+    # (racy the moment two dispatches overlap), the Logs tab sat on "pending" for the whole run,
+    # and a run that died before post-processing never reported the id at all.
+    #
+    # Deliberately best-effort: this is bookkeeping, and a test run must never fail because of
+    # it. continue-on-error covers a non-zero exit, the trailing || covers everything else.
+    - name: Attach GitHub Actions run to the execution
+      if: env.WOPEE_EXECUTED_TEST_CASE_UUID != '' && env.WOPEE_API_URL != ''
+      continue-on-error: true
+      shell: bash
+      run: |
+        QUERY='mutation($input: AttachAgentRunInput!) { attachAgentRun(input: $input) { ok attached } }'
+
+        JSON_PAYLOAD="$(jq -n \
+          --arg query "$QUERY" \
+          --arg executedTestCaseUuid "${WOPEE_EXECUTED_TEST_CASE_UUID}" \
+          --arg projectUuid "${WOPEE_PROJECT_UUID:-}" \
+          --arg githubRunId "${GITHUB_RUN_ID}" \
+          --argjson githubRunAttempt "${GITHUB_RUN_ATTEMPT:-1}" \
+          '{
+            query: $query,
+            variables: {
+              input: {
+                executedTestCaseUuid: $executedTestCaseUuid,
+                projectUuid: $projectUuid,
+                githubRunId: $githubRunId,
+                githubRunAttempt: $githubRunAttempt
+              }
+            }
+          }'
+        )"
+
+        curl --fail-with-body --silent --show-error \
+          --request POST --max-time 15 \
+          --retry 2 --retry-delay 2 \
+          --header "content-type: application/json" \
+          --header "api_key: ${WOPEE_API_KEY}" \
+          --header "projectuuid: ${WOPEE_PROJECT_UUID:-}" \
+          --url "${WOPEE_API_URL}" \
+          --data "$JSON_PAYLOAD" \
+          || echo "::warning::Could not attach run ${GITHUB_RUN_ID} to execution ${WOPEE_EXECUTED_TEST_CASE_UUID}; its log may be unreachable from Wopee."
+
     - name: Load .github/workflows/.env → $GITHUB_ENV
       shell: bash
       run: |
@@ -228,6 +275,19 @@ runs:
         echo "agent:   $(cd "$WORK_DIR" 2>/dev/null && npx --no-install playwright --version 2>/dev/null || echo 'unknown')"
         BROWSERS_DIR="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}"
         ls -la "$BROWSERS_DIR" 2>/dev/null || echo "No browsers at $BROWSERS_DIR"
+        # WHICH binary interactive mode actually drives. In interactive runs the
+        # browser is shell-launched as `chrome` from PATH, not launched by
+        # Playwright, and that symlink is built in runtime/Dockerfile.base from a
+        # filesystem walk. Nothing has ever recorded what it resolves to, so
+        # "the agent drives the build Playwright was made against" has been an
+        # assumption for the life of the CDP path.
+        CHROME_BIN="$(command -v chrome 2>/dev/null || echo '')"
+        if [ -n "$CHROME_BIN" ]; then
+          echo "chrome on PATH: $CHROME_BIN -> $(readlink -f "$CHROME_BIN")"
+          echo "chrome --version: $("$CHROME_BIN" --version 2>/dev/null || echo 'unavailable')"
+        else
+          echo "chrome not on PATH (standard/headless mode launches via Playwright)"
+        fi
         echo "::endgroup::"
 
         echo "::group::Diagnostic fingerprint (JSON)"
@@ -297,6 +357,15 @@ runs:
           if curl -sf http://127.0.0.1:9222/json/version >/dev/null; then break; fi
           sleep 0.3
         done
+
+        # The readiness probe already asks Chrome to identify itself and threw
+        # the answer away. It carries the browser build and the CDP protocol
+        # version — the two facts that say whether this browser is the one
+        # Playwright was built against, which no run has ever recorded.
+        echo "::group::Chrome identity"
+        curl -s http://127.0.0.1:9222/json/version || echo "could not read /json/version"
+        echo
+        echo "::endgroup::"
 
     - name: Register browser session with API relay
       if: env.AGENT_MODE == 'interactive'
