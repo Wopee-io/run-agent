@@ -499,7 +499,8 @@ runs:
         wait $!
 
     - name: Upload test results
-      if: always()
+      # WOPEE_UPLOAD_ARTIFACTS=runner keeps the results on the self-hosted runner's disk instead (last step below).
+      if: always() && env.WOPEE_UPLOAD_ARTIFACTS != 'runner'
       # A failed/slow upload must not fail the run or hold the runner; the agent verdict is already reported.
       continue-on-error: true
       uses: actions/upload-artifact@v7
@@ -636,3 +637,26 @@ runs:
       run: |
         RID="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
         rm -f "/dynamic/${RID}.yml" || true
+
+    - name: Keep test results on the runner
+      # WOPEE_UPLOAD_ARTIFACTS=runner (set in the self-hosted runner's .env): the results stay on the runner's disk
+      # instead of being uploaded — the upload moves 220–260 MB and takes 70–150 s of an 8–12 min run on a
+      # VPN-bound runner. A retention job on the runner removes them after 24 h. This is the last step so the
+      # report export and post-process steps above still find test-results in the work dir.
+      if: always() && env.WOPEE_UPLOAD_ARTIFACTS == 'runner'
+      shell: bash
+      run: |
+        set -uo pipefail
+        DEST="${WOPEE_RUNNER_ARTIFACT_DIR:-$HOME/.wopee/artifacts}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+        mkdir -p "$DEST"
+        for d in test-results playwright-report; do
+          [ -d "${WOPEE_AGENT_WORK_DIR}/$d" ] && mv "${WOPEE_AGENT_WORK_DIR}/$d" "$DEST/"
+        done
+        for f in /tmp/proxy.out /tmp/chrome.out /tmp/socat-proxy.out /tmp/socat-viewer.out; do
+          [ -f "$f" ] && cp "$f" "$DEST/"
+        done
+        printf 'repo=%s\nrun=%s\nattempt=%s\nrunner=%s\ntest_case=%s\nkept_at=%s\n' \
+          "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "${RUNNER_NAME:-}" \
+          "${WOPEE_EXECUTED_TEST_CASE_UUID:-}" "$(date -u +%FT%TZ)" > "$DEST/.meta"
+        MSG="Test results kept on runner ${RUNNER_NAME:-?} at $DEST ($(du -sh "$DEST" | cut -f1)) — not uploaded (WOPEE_UPLOAD_ARTIFACTS=runner); the runner's retention job removes them after 24 h."
+        echo "$MSG"; echo "$MSG" >> "$GITHUB_STEP_SUMMARY"
